@@ -1,6 +1,6 @@
 ## Horizontal Pod Autoscaling using Nvidia GPU Metrics (WIP):
 
-***Please Note**: This is a Work-in-progress. The approach layed out in the following step is incomplete. We hope to have this sorted-out soon. In addition, we assume that all nodes have at most one GPU for now.*
+> **Please Note**: This is a Work-in-progress. The approach layed out in the following step is incomplete. We hope to have this sorted-out soon. In addition, we assume that all nodes have at most one GPU for now.
 
 ### Overview:
 An implemention of [Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) based on GPU metrics.
@@ -45,7 +45,7 @@ We opted not to use the `dcgm-exporter` chart and apply the `DaemonSet` and `Ser
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -f kube-prometheus-stack-values.yaml
 kubectl apply -f dcgm-exporter.yaml
 ```
-***Note**: In the values file `kube-prometheus-stack-values.yaml`, make sure the `hostPath` value in the `libnvidia` volume matches the `LD_LIBRARY_PATH` in your node(s). It may not necessarily be `/home/kubernetes/bin/nvidia/lib64/`.*
+> **Note**: In the values file `kube-prometheus-stack-values.yaml`, make sure the `hostPath` value in the `libnvidia` volume matches the `LD_LIBRARY_PATH` in your node(s). It may not necessarily be `/home/kubernetes/bin/nvidia/lib64/`.
 
 
 #### 4. Test the metric export
@@ -57,14 +57,14 @@ curl localhost:9090/api/v1/query?query=dcgm_gpu_utilization
 
 
 #### 5. Install `prometheus-adapter`
-In `prometheus-adapter-values.yaml`, we add a `rule` of type `custom` and another one of type `resource` to expose the `dcgm_gpu_utilization` metric for each node, then proceed to install:
+In `prometheus-adapter-values.yaml`, we add a `rule` of type `custom` to expose the `dcgm_gpu_utilization` metric:
 ```bash
 helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter -f prometheus-adapter-values.yaml
 ```
 
 
 #### 6. Compute the average GPU utilization by the deployment
-Currently, GPU utilization metrics are exported by the `dcgm-exporter` for each node. We need to average the `dcgm_gpu_utilization` value of all nodes that host a replica of the deployment into a `cuda_test_gpu_avg` that can be targeted by a `HorizontalPodAutoscaler`:
+Currently, GPU utilization metrics are exported by the `dcgm-exporter` for each node. We need to average the `dcgm_gpu_utilization` value of all nodes that host a replica of our deployment into a `cuda_test_gpu_avg` metric that can be targeted by a `HorizontalPodAutoscaler`:
 ```bash
 # TODO
 ```

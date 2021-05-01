@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: "dcgm-exporter"
+  labels:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "2.4.0-rc.2"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "dcgm-exporter"
+      app.kubernetes.io/version: "2.4.0-rc.2"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: "dcgm-exporter"
+        app.kubernetes.io/version: "2.4.0-rc.2"
+      name: "dcgm-exporter"
+    spec:
+      nodeSelector:
+        accelerator: nvidia-gpu
+      tolerations:
+      - key: "nvidia.com/gpu"
+        value: "present"
+        effect: "NoSchedule"
+      containers:
+      - image: "nvcr.io/nvidia/k8s/dcgm-exporter:2.1.8-2.4.0-rc.2-ubuntu18.04"
+        env:
+        - name: "DCGM_EXPORTER_LISTEN"
+          value: ":9400"
+        - name: "DCGM_EXPORTER_KUBERNETES"
+          value: "true"
+        - name: LD_LIBRARY_PATH
+          value: "/bin/nvidia/lib64/"
+        args: ["-f", "/etc/dcgm-exporter/1.x-compatibility-metrics.csv"]
+        name: "dcgm-exporter"
+        ports:
+        - name: "metrics"
+          containerPort: 9400
+        securityContext:
+          capabilities:
+            add:
+            - SYS_ADMIN
+          privileged: true
+          runAsNonRoot: false
+          runAsUser: 0
+        volumeMounts:
+        - name: "pod-gpu-resources"
+          readOnly: true
+          mountPath: "/var/lib/kubelet/pod-resources"
+        - name: libnvidia
+          readOnly: true
+          mountPath: /bin/nvidia/lib64/
+      volumes:
+      - name: "pod-gpu-resources"
+        hostPath:
+          path: "/var/lib/kubelet/pod-resources"
+      - name: libnvidia
+        hostPath:
+          path: /home/kubernetes/bin/nvidia/lib64/ # for k3s: /usr/local/cuda-11.2/lib64/
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: "dcgm-exporter"
+  labels:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "2.4.0-rc.2"
+spec:
+  selector:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "2.4.0-rc.2"
+  ports:
+  - name: "metrics"
+    port: 9400

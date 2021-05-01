@@ -13,15 +13,15 @@ prometheus:
       relabel_configs:
       - source_labels: [__meta_kubernetes_pod_node_name]
         action: replace
-        target_label: kubernetes_node
+        target_label: node
 
-# additionalPrometheusRulesMap:
-#   gpu-rules:
-#     groups:
-#     - name: gpu-rule-group
-#       rules:
-#       - record: dcgm_gpu_utilization                            
-#         expr: dcgm_gpu_utilization
-#         labels:
-#           namespace: default
-#           deployment: prometheus-adapter
+additionalPrometheusRulesMap:
+  gpu-rules:
+    groups:
+    - name: gpu-rule-group
+      rules:
+      - record: deployment_namespace:dcgm_gpu_utilization:avg                            
+        expr: avg(dcgm_gpu_utilization)
+        labels:
+          namespace: "default"
+          deployment: "cuda-test"

@@ -33,7 +33,23 @@ kubectl label nodes {node} accelerator=nvidia-gpu
 > **Note**: If you're running on GKE, EKS, or AKS and you have cluster autoscaling enabled, make sure the label is automatically attached to the node when it's created.
 
 
-#### 2. Add helm repositories
+#### 2. Install `dcgm-exporter`
+We opted not to use the `dcgm-exporter` chart and apply the `DaemonSet` and `Service` directly.
+```bash
+kubectl apply -f dcgm-exporter.yaml
+```
+> **Note**: In `dcgm-exporter.yaml`, make sure the `hostPath` value in the `libnvidia` volume matches the `LD_LIBRARY_PATH` in your node(s). It may not necessarily be `/home/kubernetes/bin/nvidia/lib64/`.
+
+
+#### 3. Test the DCGM exporter by querying it directly
+Once `dcgm-exporter` is running, we can query its `/metrics` endpoint for GPU temperatures of one of the nodes for example:
+```bash
+kubectl port-forward svc/dcgm-exporter 9400:9400 # run this in a separate terminal
+curl localhost:9400/metrics | grep dcgm_gpu_temp
+```
+
+
+#### 4. Add helm repositories
 We add the `prometheus-community` helm repository which contains `kube-prometheus-stack` and `prometheus-adapter`:
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -41,77 +57,79 @@ helm repo update
 ```
 
 
-#### 3. Install `kube-prometheus-stack` and `dcgm-exporter`
-We opted not to use the `dcgm-exporter` chart and apply the `DaemonSet` and `Service` directly:
+#### 5. Install `kube-prometheus-stack` and compute the average GPU utilization for the deployment
+As we install prometheus through the helm chart, we create two important objects:
+1. An `additionalScrapeConfigs` job to scrap metrics exported by `dcgm-exporter` to `/metrics`
+2. An `additionalPrometheusRules` recording rule to compute the custom metric (which we'll call `cuda_test_gpu_avg` in this example) that we'd like to use to autoscale our deployment (called `cuda-test`) 
+
+    This metric is computed using a PromQL query where we average the positive `dcgm_gpu_utilization` values of all GPUs residing in nodes that host a replica of our deployment:
+    ```sql
+    avg(
+        avg by(node) (dcgm_gpu_utilization > 0) 
+        * on(node) group_right() 
+        max by (node) (label_replace(
+            (
+                max by(exported_node, pod, namespace) (kube_pod_info{exported_node!=""})
+                * on(pod) group_left(label_app)
+                max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"})
+            ), 
+            "node", "$1", "exported_node", "(.*)"
+        ))
+    )
+    ```
+
+This is the installation command:
 ```bash
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -f kube-prometheus-stack-values.yaml
-kubectl apply -f dcgm-exporter.yaml
 ```
-> **Note**: In `dcgm-exporter.yaml`, make sure the `hostPath` value in the `libnvidia` volume matches the `LD_LIBRARY_PATH` in your node(s). It may not necessarily be `/home/kubernetes/bin/nvidia/lib64/`.
 
 
-#### 4. Test the metric export
-Once the `dcgm-exporter` pod(s) start running, the metrics should be available to query through Prometheus:
+#### 6. Test the custom metric by querying prometheus
+Once prometheus is fully running, we can create our deployment (or there wouldn't be any positive `dcgm_gpu_utilization` values to average). Our test workload is a loop of calls to the `vectorAdd` script often used to test that the cluster can successfully run CUDA containers.
+
+The custom metric should be available to query through Prometheus within 30 seconds:
 ```bash
-kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090
-curl localhost:9090/api/v1/query?query=dcgm_gpu_utilization
+kubectl apply -f cuda-test-deployment.yaml
+kubectl port-forward svc/kube-prometheus-stack-prometheus 9090:9090 # run this in a separate terminal
+curl localhost:9090/api/v1/query?query=cuda_test_gpu_avg
 ```
 
 
-#### 5. Install `prometheus-adapter` and compute the average GPU utilization for the deployment
-In `prometheus-adapter-values.yaml`, we add a `rule` of type `custom` to expose the `dcgm_gpu_utilization`.
-
-In addition we add another `rule` of type `record` to compute the metric that will be targeted by a `HorizontalPodAutoscaler`.
-
-This metric is computed using a PromQL query where we average the non-zero `dcgm_gpu_utilization` values of all GPUs residing in nodes that host a replica of our deployment:
-```sql
-avg(
-    avg by(node) (dcgm_gpu_utilization > 0) 
-    * on(node) group_right() 
-    max by (node) (label_replace(
-        (
-            max by(exported_node, pod, namespace) (kube_pod_info{exported_node!=""})
-            * on(pod) group_left(label_app)
-            max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"})
-        ), 
-        "node", "$1", "exported_node", "(.*)"
-    ))
-)
-```
-
-To install prometheus-adapter and create the two aforementionned rules:
+#### 7. Install `prometheus-adapter`
+As we install the adapter, we only need to point it to the prometheus service:
 ```bash
 helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter --set prometheus.url="http://kube-prometheus-stack-prometheus.default.svc.cluster.local"
 ```
 
 
-#### 6. Test the custom metric export
+#### 8. Test the custom metric export
 The custom metric should available in the `custom.metrics.k8s.io` API. We use `jq` to format the response: 
 ```bash
 kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq -r . | grep cuda_test_gpu_avg
 ```
 
 
-#### 7. Create the deployment and horizontal pod autoscaler
-We can now create our `deployment` and `HorizontalPodAutoscaler` resources. Our test workload is a loop of calls to the `vectorAdd` script often used to test that the cluster can successfully run CUDA containers:
+#### 9. Create the deployment and horizontal pod autoscaler
+We can now create our `HorizontalPodAutoscaler` resource:
 ```bash
-kubectl apply -f cuda-test-deployment.yaml # creates only a single pod
 kubectl apply -f cuda-test-hpa.yaml
 ```
 
 
-#### 8. Test the horizontal pod autoscaler effects
-The `HorizontalPodAutoscaler` should add an extra replica once the GPU utilization by the original replica reaches the target value of 4%. If the GPU utilization constantly remains under that, you can exec into the pod and manually double the workload to ensure the autoscale is triggered by running:
+#### 10. Test the horizontal pod autoscaler effects
+The `HorizontalPodAutoscaler` should add an extra replica or more once the GPU utilization by the original replica reaches the target value of 4%. If the GPU utilization constantly remains under that, you can `kubectl exec` into the pod and manually double the workload to increase the value of `cuda_test_gpu_avg` by running:
 ```bash
 for (( c=1; c<=5000; c++ )); do ./vectorAdd; done
 ```
 
-We can then list the pods of our deployment, and hopefully, a second replica will be added:
+Now we list the pods that belong to our deployment, and hopefully, a second replica will be added:
 ```bash
 kubectl get pod | grep cuda-test
 ```
+Naturally, if the usage drops low enough, a scaledown will occur.
 
-If the usage drops low enough, a scaledown will occur naturally.
+> **Note**: The autoscaler might create more than one replica (perhaps creating as many as specified in the `maxReplicas` valie) because by default, the `dcgm-exporter` updates its metrics every 30 seconds, which means that even if the actual GPU utilization average drops down lower than the `targetValue` when a certain number of replicas is added, the value of `cuda_test_gpu_avg` may still be above the limit, causing the HPA to keep adding replicas. This default value of 30 seconds can be configured for `dcgm-exporter` through container arguments.
+
 
 
 

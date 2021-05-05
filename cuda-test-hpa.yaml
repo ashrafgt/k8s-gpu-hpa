@@ -9,12 +9,13 @@ spec:
     kind: Deployment
     name: cuda-test
   minReplicas: 1
-  maxReplicas: 2
+  maxReplicas: 3
   metrics:
   - type: Object
     object:
       target:
-        kind: Deployment
+        apiVersion: "apps/v1"
+        kind: deployment
         name: cuda-test
-      metricName: cuda_test_gpu_avg
-      targetValue: 3 # low value of 3% just for testing
+      metricName: "cuda_test_gpu_avg"
+      targetValue: 5

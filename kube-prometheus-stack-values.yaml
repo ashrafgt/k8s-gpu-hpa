@@ -15,13 +15,13 @@ prometheus:
         action: replace
         target_label: node
 
-# additionalPrometheusRulesMap:
-#   gpu-rules:
-#     groups:
-#     - name: gpu-rule-group
-#       rules:
-#       - record: deployment_namespace:dcgm_gpu_utilization:avg                            
-#         expr: avg(dcgm_gpu_utilization)
-#         labels:
-#           namespace: "default"
-#           deployment: "cuda-test"
+additionalPrometheusRulesMap:
+  gpu-rules:
+    groups:
+    - name: gpu-rule-group
+      rules:
+      - record: cuda_test_gpu_avg
+        expr: avg( avg by(node) (dcgm_gpu_utilization > 0) * on(node) group_right() max by (node) (label_replace( ( max by(exported_node, pod, namespace) (kube_pod_info{exported_node!=""}) * on(pod) group_left(label_app) max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"}) ), "node", "$1", "exported_node", "(.*)" )) )
+        labels:
+          namespace: default
+          deployment: cuda-test

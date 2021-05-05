@@ -1,7 +1,0 @@
-prometheus:
-  url: http://kube-prometheus-stack-prometheus.default.svc.cluster.local
-rules:
-  custom:
-  - seriesQuery: '{__name__=~"^dcgm_gpu_utilization$"}'
-    resources:
-      template: <<.Resource>>

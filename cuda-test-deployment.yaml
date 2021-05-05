@@ -5,7 +5,6 @@ metadata:
   labels:
     app: cuda-test
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: cuda-test
@@ -17,7 +16,7 @@ spec:
       containers:
       - name: cuda-test-main
         image: "k8s.gcr.io/cuda-vector-add:v0.1"
-        command: ["bash", "-c", "for (( c=1; c<=50000; c++ )); do ./vectorAdd; done"]
+        command: ["bash", "-c", "for (( c=1; c<=5000; c++ )); do ./vectorAdd; done"]
         resources:
           limits:
             nvidia.com/gpu: 1

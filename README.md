@@ -1,22 +1,20 @@
-## Horizontal Pod Autoscaling using Nvidia GPU Metrics (WIP):
+## Horizontal Pod Autoscaling using Nvidia GPU Metrics:
 
-> **Please Note**: This current version is only valid for autoscaling workloads that have exclusive access to the GPUs of the nodes they're running on, which is a major limitation. Please see the limitations section at the end of the page for more details.
+> **Please Note**: This version has not been extensively tested. If you encounter any unexpected behaviour using this solution, don't hesistate to open an issue.
 
 
 ### Overview:
-An implemention of [Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) based on GPU metrics.
-
-The approach we're experimenting with requires the following components:
-- [DCGM Exporter](https://github.com/NVIDIA/gpu-monitoring-tools#dcgm-exporter) which exports GPU metrics for each GPU-capable node in the cluster that matches a certain k8s label. We selected the GPU utilization metric (`dcgm_gpu_utilization`) for this example.
-- [Prometheus](https://github.com/prometheus/prometheus) which collects, transforms, and serves the GPU metrics coming from the DCGM Exporter.
-- [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) which redirects the GPU metrics served by Prometheus to the k8s custom metrics API `custom.metrics.k8s.io` so that they're used by the `HorizontalPodAutoscaler` controller to scale up our workfloads.
+An implemention of [Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) based on GPU metrics using the following components:
+- [DCGM Exporter](https://github.com/NVIDIA/gpu-monitoring-tools#dcgm-exporter) which exports GPU metrics for each workload that uses GPUs. We selected the GPU utilization metric (`dcgm_gpu_utilization`) for this example.
+- [Prometheus](https://github.com/prometheus/prometheus) which collects the metrics coming from the DCGM Exporter and transforms them into a metric that can be used for autoscaling deployments.
+- [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) which redirects the autoscale metric served by Prometheus to the k8s custom metrics API `custom.metrics.k8s.io` so that they're used by the `HorizontalPodAutoscaler` controller.
 
 
 <br/>
 
 ### Walkthrough:
 
-The following steps illustrate our progress:
+The following steps detail how to configure autoscaling for a GPU workload:
 
 #### 0. Setup the environment:
 To follow this walkthrough, you need the following:
@@ -34,7 +32,7 @@ kubectl label nodes {node} accelerator=nvidia-gpu
 
 
 #### 2. Install `dcgm-exporter`
-We opted not to use the `dcgm-exporter` chart and apply the `DaemonSet` and `Service` directly.
+We opted not to use the `dcgm-exporter` chart and apply the `DaemonSet` and `Service` directly:
 ```bash
 kubectl apply -f dcgm-exporter.yaml
 ```
@@ -57,34 +55,29 @@ helm repo update
 ```
 
 
-#### 5. Install `kube-prometheus-stack` and compute the average GPU utilization for the deployment
-As we install prometheus through the helm chart, we create two important objects:
-1. An `additionalScrapeConfigs` job to scrap metrics exported by `dcgm-exporter` to `/metrics`
-2. An `additionalPrometheusRules` recording rule to compute the custom metric (which we'll call `cuda_test_gpu_avg` in this example) that we'd like to use to autoscale our deployment (called `cuda-test`) 
-
-    This metric is computed using a PromQL query where we average the positive `dcgm_gpu_utilization` values of all GPUs residing in nodes that host a replica of our deployment:
-    ```sql
-    avg(
-        avg by(node) (dcgm_gpu_utilization > 0) 
-        * on(node) group_right() 
-        max by (node) (label_replace(
-            (
-                max by(exported_node, pod, namespace) (kube_pod_info{exported_node!=""})
-                * on(pod) group_left(label_app)
-                max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"})
-            ), 
-            "node", "$1", "exported_node", "(.*)"
-        ))
-    )
-    ```
-
-This is the installation command:
+#### 5. Install `kube-prometheus-stack`
+As we install prometheus through the helm chart an `additionalScrapeConfigs` which creates a job to scrape metrics exported by `dcgm-exporter` to `/metrics`:
 ```bash
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -f kube-prometheus-stack-values.yaml
 ```
 
+#### 6. Compute the average GPU utilization for the deployment
+We can now create a recording rule to periodically compute and expose the autoscale metric (called `cuda_test_gpu_avg` in this example) for our deployment (called `cuda-test`):
+```bash
+kubectl apply -f cuda-test-prometheusrule.yaml
+```
 
-#### 6. Test the custom metric by querying prometheus
+This metric is computed using a PromQL query where we average the `dcgm_gpu_utilization` values of all GPUs used by a replica of our deployment:
+```sql
+avg(
+    max by(node, pod, namespace) (dcgm_gpu_utilization)
+    * on(pod) group_left(label_app)
+    max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"})
+)
+```
+
+
+#### 7. Test the custom metric by querying prometheus
 Once prometheus is fully running, we can create our deployment (or there wouldn't be any positive `dcgm_gpu_utilization` values to average). Our test workload is a loop of calls to the `vectorAdd` script often used to test that the cluster can successfully run CUDA containers.
 
 The custom metric should be available to query through Prometheus within 30 seconds:
@@ -95,28 +88,28 @@ curl localhost:9090/api/v1/query?query=cuda_test_gpu_avg
 ```
 
 
-#### 7. Install `prometheus-adapter`
+#### 8. Install `prometheus-adapter`
 As we install the adapter, we only need to point it to the prometheus service:
 ```bash
 helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter --set prometheus.url="http://kube-prometheus-stack-prometheus.default.svc.cluster.local"
 ```
 
 
-#### 8. Test the custom metric export
+#### 9. Test the custom metric export
 The custom metric should available in the `custom.metrics.k8s.io` API. We use `jq` to format the response: 
 ```bash
 kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq -r . | grep cuda_test_gpu_avg
 ```
 
 
-#### 9. Create the deployment and horizontal pod autoscaler
+#### 10. Create the deployment and horizontal pod autoscaler
 We can now create our `HorizontalPodAutoscaler` resource:
 ```bash
 kubectl apply -f cuda-test-hpa.yaml
 ```
 
 
-#### 10. Test the horizontal pod autoscaler effects
+#### 11. Test the horizontal pod autoscaler effects
 The `HorizontalPodAutoscaler` should add an extra replica or more once the GPU utilization by the original replica reaches the target value of 4%. If the GPU utilization constantly remains under that, you can `kubectl exec` into the pod and manually double the workload to increase the value of `cuda_test_gpu_avg` by running:
 ```bash
 for (( c=1; c<=5000; c++ )); do ./vectorAdd; done
@@ -128,28 +121,4 @@ kubectl get pod | grep cuda-test
 ```
 Naturally, if the usage drops low enough, a scaledown will occur.
 
-> **Note**: The autoscaler might create more than one replica (perhaps creating as many as specified in the `maxReplicas` valie) because by default, the `dcgm-exporter` updates its metrics every 30 seconds, which means that even if the actual GPU utilization average drops down lower than the `targetValue` when a certain number of replicas is added, the value of `cuda_test_gpu_avg` may still be above the limit, causing the HPA to keep adding replicas. This default value of 30 seconds can be configured for `dcgm-exporter` through container arguments.
-
-
-
-
-### Limitations:
-
-This example has some issues that we'd like to detail:
-
-#### 1. Target workloads must not share multi-GPU nodes with other workloads:
-
-If you have pods from other workloads running on the same multi-GPU node as your autoscale target, the autoscale metric will mistakenly count their GPU utilization as part of your autoscale target's GPU utilization. This is because we haven't implemented a way of listing which GPU device IDs belong to a given pod. 
-
-Consider configuring [anti-affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity) to ensure this condition is valid.
-
-Else, ff you're somehow able to export that information to prometheus, you can modify the autoscale metric query to solve this issue.
-
-#### 2. A recording rule is needed for each autoscaled deployment:
-
-To expose a custom metric to the `custom.metrics.k8s.io` API for each deployment, a recording rule that has the deployment name in the metric expression and the labels is needed. This means some duplication will occur, and if you configure the prometheus rules like this example (in the helm chart values), creating a new deployment requires redeploying the `kube-prometheus-stack` chart.
-
-It's possible to put the rules in `configmap` and point your prometheus deployment to it, then send a reload HTTP request to the prometheus web server following the creation of your deployments:
-```bash
-curl -X POST http://promtheus-url:9090/-/reload
-```
+> **Note**: By default, the autoscaler might create more than one replica (perhaps creating as many as specified in the `maxReplicas` value). This is because the `dcgm-exporter` updates its metrics every 10 seconds and the pod may take a while to pull the image and start the container. This delay in starting and capturing the effect of the replicas causes the HPA to keep adding them. You can more-or-less [control this behavior](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#support-for-configurable-scaling-behavior) if you use `autoscaling/v2beta1`.

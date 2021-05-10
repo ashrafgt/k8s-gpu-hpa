@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+  name: cuda-test
+spec:
+  groups:
+  - name: gpu-rule-group
+    rules:
+    - record: cuda_test_gpu_avg
+      expr: avg( max by(node, pod, namespace) (dcgm_gpu_utilization) * on(pod) group_left(label_app) max by(pod, label_app) (kube_pod_labels{label_app="cuda-test"}) )
+      labels:
+        namespace: default
+        deployment: cuda-test

@@ -34,7 +34,7 @@ spec:
           value: "true"
         - name: LD_LIBRARY_PATH
           value: "/bin/nvidia/lib64/"
-        args: ["-f", "/etc/dcgm-exporter/1.x-compatibility-metrics.csv"]
+        args: ["-c", "10000", "-f", "/etc/dcgm-exporter/1.x-compatibility-metrics.csv", "--kubernetes-gpu-id-type", "device-name"]
         name: "dcgm-exporter"
         ports:
         - name: "metrics"

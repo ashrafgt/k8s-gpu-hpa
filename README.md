@@ -1,6 +1,6 @@
 ## Horizontal Pod Autoscaling using Nvidia GPU Metrics:
 
-> **Please Note**: This version has not been extensively tested. If you encounter any unexpected behaviour using this solution, don't hesistate to open an issue.
+> **Please Note**: This solution has not been extensively tested. If you encounter any unexpected, don't hesistate to open an issue.
 
 
 ### Overview:
